@@ -1,7 +1,10 @@
 import logging
 import os
+import datetime
+import threading
+import time
 
-#from pt import print_space
+from pt import pt_ver
 from dearpygui import dearpygui as dpg
 from PySide6.QtWidgets import (
     QWidget,
@@ -12,11 +15,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QHBoxLayout,
     QMessageBox,
+    QCheckBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIntValidator, QFont, QFontDatabase
 
-gobang_ver: str = "0-1"
+gobang_ver: str = "b-2"
 gobang_pre_ver: bool = True
 
 gobang_logger = logging.getLogger("五子棋Gobang_logger")
@@ -42,6 +46,7 @@ win_need: int = 5
 
 player_color: dict = {
     "空": [255, 255, 255, 255],
+    "數字": [219, 216, 0, 255],
     ##
     "藍": [0, 165, 255, 255],
     "橘": [255, 165, 0, 255],
@@ -68,6 +73,11 @@ for init_num in player_num:
     max_player_count = init_num
 
 game_started: bool = False
+game_finished: bool = False
+
+setting: dict = {
+    "show_out_of_board": False,
+}
 
 class main(QWidget):
     def __init__(self):
@@ -80,9 +90,14 @@ class main(QWidget):
         v = QLabel("五子棋")
         v.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(v)
-        v = QLabel("版本 v" + gobang_ver)
+        v = QLabel(f"版本 v({gobang_ver})")
         v.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(v)
+        #
+        v = QLabel(f"pt版本：{pt_ver}")
+        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(v)
+        #
         r_layout = QHBoxLayout()
         v = QLabel("連幾格獲勝：")
         self.le1 = QLineEdit()
@@ -119,6 +134,10 @@ class main(QWidget):
         r_layout.addWidget(self.le4)
         layout.addLayout(r_layout)
         #
+        self.cb1 = QCheckBox("超出範圍顯示")
+        self.cb1.setChecked(False)
+        layout.addWidget(self.cb1)
+        #
         v = QPushButton("> 開始遊戲 <")
         v.clicked.connect(self.button_clicked)
         layout.addWidget(v)
@@ -131,7 +150,8 @@ class main(QWidget):
         global player_count
         global win_need
         global board_size_x, board_size_y
-        global game_started
+        global game_started, game_finished
+        global setting
         if game_started is True:
             msg_box = QMessageBox()
             msg_box.setIcon(QMessageBox.Icon.Warning)
@@ -141,6 +161,8 @@ class main(QWidget):
             msg_box.exec()
         else:
             game_started = True
+            game_finished = False
+            setting["show_out_of_board"] = self.cb1.isChecked()
             win_need = int(self.le1.text())
             player_count = int(self.le2.text())
             board_size_x = int(self.le3.text()) + 1
@@ -150,16 +172,22 @@ class main(QWidget):
 
 
 def start_game():
-    global font_path
+    global font_path, turn, turn_num
+    #
+    turn_num = 1
+    turn = player_num[turn_num]
+    #
     dpg.create_context()
     with dpg.font_registry():
         with dpg.font(font_path, 30) as default_font:
             dpg.add_font_range_hint(dpg.mvFontRangeHint_Chinese_Full)
     dpg.bind_font(default_font)
     dpg.create_viewport(title="Gobang GUI (game)")
-    game()
     dpg.setup_dearpygui()
     dpg.show_viewport()
+    dpg.maximize_viewport()
+    window = game()
+    dpg.set_viewport_resize_callback(window.board_window_resizer)
     dpg.start_dearpygui()
     dpg.destroy_context()
 
@@ -169,30 +197,47 @@ class game:
         self.create_choosed_window()
         self.out_of_board_create()
         self.create_notification_window()
-        self.create_already_piece()
+        self.create_control_center()
         #
         dpg.set_exit_callback(self.__exit__)
-        #
         #game
         self.create_board()
+        #
+        update_thread = threading.Thread(target=self.data_updater)
+        update_thread.start()
+        #dpg.set_frame_callback(1, self.control_center_resizer)
 
     def create_board(self):
         global board_data, board_size_x, board_size_y
-        with dpg.window(width=1080, height=720, tag="board_window"):
-            #
-            self._change_turn__window_title()
+        with dpg.window(
+                label="Gobang GUI 棋盤",
+                width=dpg.get_viewport_width() - 10,
+                height=dpg.get_viewport_height() - 10,
+                tag="board_window",
+                pos=[0, 0],
+                no_close=True,
+            ):
             #
             dpg.add_drawlist((30 * board_size_x), (30 * board_size_y), tag="board_drawing")
+            #
+            dpg.draw_text([0, 0], "現在是隊的下棋時間", size=30, tag="turn_text")
+            self._change_turn__turn_text()
+            #
             #all_num_list = []
             for x in range(1, board_size_x):
                 #all_num_list.append(print_space("", str(i), 2, print_it=False, fill_item=" "))
                 #dpg.draw_text([0, 0], "     " + "  ".join(all_num_list), size=30)
                 pos_x = x * 30
-                dpg.draw_text([pos_x, 0], str(x), size=30)
+                dpg.draw_text([pos_x, 30], str(x), size=30, color=player_color["數字"])
+            #
+            for y in range(1, board_size_y):
+                pos_y = y * 30 + 30
+                dpg.draw_text([0, pos_y], str(y), size=30, color=player_color["數字"])
+            #
             for x in range(1, board_size_x):
                 for y in range(1, board_size_y):
                     pos_x = x * 30
-                    pos_y = y * 30
+                    pos_y = y * 30 + 30
                     dpg.draw_text(
                         [pos_x, pos_y],
                         board_data[f"{x}~{y}"],
@@ -222,7 +267,9 @@ class game:
                 )
 
     def get_click_pos(self, sender, app_data) -> None:
-        global board_size_x, board_size_y
+        global board_size_x, board_size_y, setting, game_finished
+        if game_finished is True:
+            return None
         if (dpg.is_item_shown("choosed_window") is True) or (dpg.is_item_shown("notification_window") is True):
             return None
         pos_xy = dpg.get_mouse_pos()
@@ -239,29 +286,35 @@ class game:
         x -= 1
         #y
         y = 0
-        for i in range(1, board_size_x + 1):
+        for i in range(1, board_size_x + 2):
             a = i * 30 - 30
             b = i * 30
             if pos_y in range(a, b):
                 y = i
                 break
+        y -= 2
+        #
         if (y <= 0) or (x <= 0):
-            gobang_logger.debug(f"超出棋盤範圍，Y：{y} X：{x}")
-            self.out_of_board_show()
-            return None
-        y -= 1
+            if setting["show_out_of_board"] is True:
+                gobang_logger.debug(f"超出棋盤範圍，Y：{y} X：{x}")
+                self.out_of_board_show()
+                return None
+            else:
+                return None
         #
         xy = f"{x}~{y}"
         if board_data[xy] != "空":
-            self.show_already_piece()
+            self.already_piece(xy)
             return None
         board_data[xy] = turn
         #print(board_data, end="\n\n")
         #
         ##dpg.set_value("choosed_window_text", f"{turn}隊選擇({xy})")
         ##dpg.show_item("choosed_window")
-        dpg.set_value("notification_text", f"{turn}隊選擇({xy})")
-        self.show_notificartion_window()
+        self.check_win()
+        if game_finished is True:
+            return None
+        self.push_notification(f"{turn}隊選擇({xy})")
         #self.redraw_board()
         dpg.configure_item(
             f"piece_{x}~{y}",
@@ -269,7 +322,6 @@ class game:
             color=player_color[board_data[f"{x}~{y}"]]
         )
         self.change_turn()
-        self.check_win()
         return None
 
     def create_choosed_window(self):
@@ -291,16 +343,8 @@ class game:
     def close_choosed_window(self):
         dpg.hide_item("choosed_window")
 
-    def create_already_piece(self):
-        with dpg.window(label="Gobang GUI 通知", modal=True, tag="already_piece", show=False):
-            dpg.add_text("已有旗子!")
-            dpg.add_button(label="確定", callback=self.hide_already_piece)
-
-    def show_already_piece(self):
-        dpg.show_item("already_piece")
-
-    def hide_already_piece(self):
-        dpg.hide_item("already_piece")
+    def already_piece(self, piece_pos):
+        self.push_notification(f"該位子已有旗子({piece_pos})")
 
     def change_turn(self):
         global turn_num, player_num ,turn
@@ -309,10 +353,15 @@ class game:
             turn_num = 1
         #
         turn = player_num[turn_num]
-        self._change_turn__window_title()
+        self._change_turn__turn_text()
 
-    def _change_turn__window_title(self):
-        dpg.set_item_label("board_window", f"棋盤，現在是{turn}的下棋時間")
+    def _change_turn__turn_text(self):
+        #dpg.set_item_label("board_window", f"現在是{turn}隊的下棋時間")
+        dpg.configure_item(
+            "turn_text",
+            text=f"現在是{turn}隊的下棋時間",
+            color=player_color[turn]
+        )
 
     def create_notification_window(self):
         window_width = 250
@@ -329,9 +378,13 @@ class game:
         dpg.hide_item("notification_window")
         return None
 
-    def show_notificartion_window(self) -> None:
+    def show_notification_window(self) -> None:
         dpg.show_item("notification_window")
         return None
+
+    def push_notification(self, text: str):
+        dpg.set_value("notification_text", text)
+        self.show_notification_window()
 
     def check_win(self):
         global board_size_x, board_size_y, board_data, win_need
@@ -428,13 +481,67 @@ class game:
             return True
 
 
-    def won(self, tmp, *won_list):
+    def won(self, tmp, won_list):
         """
         won_list 目前未完成
         """
-        with dpg.window(label="Gabang GUI 通知", modal=True):
-            dpg.add_text(tmp + "隊贏了", color=player_color[tmp])
-            dpg.add_button(label="確定")
+        global game_finished
+        gobang_logger.debug("won")
+        self.push_notification(f"{tmp}隊贏了")
+        dpg.configure_item("turn_text", text=f"遊戲結束，{tmp}隊獲勝")
+        game_finished = True
+
+    def board_window_resizer(self, sender, app_data, user_data):
+        dpg.set_item_height("board_window", dpg.get_viewport_height() - 210)
+        dpg.set_item_width("board_window", dpg.get_viewport_width() - 10)
+        dpg.set_item_width("control_center_window", dpg.get_viewport_width() - 10)
+
+    def create_control_center(self):
+        with dpg.window(
+            label="Gobang GUI 控制中心",
+            height=200,
+            width=dpg.get_viewport_width(),
+            no_close=True,
+            tag="control_center_window"
+        ):
+            time_formated = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            dpg.add_text(f"遊戲開始時間：{time_formated}", pos=[10, 30])
+            dpg.add_text(f"目前時間：{time_formated}", tag="control_center__time_text", pos=[500, 30])
+
+    def control_center_resizer(self) -> None:
+        if dpg.get_item_state("board_window")['visible'] is True:
+            # 獲取第一個視窗的位置和高度
+            first_window_pos = dpg.get_item_pos("board_window")
+            first_window_height = dpg.get_item_height("board_window")
+            # 計算第二個視窗的新位置
+            # X 座標與第一個視窗相同
+            # Y 座標為第一個視窗的 Y 加上其高度 (留一點間隙)
+            if type(first_window_height) is int:
+                new_y_pos = first_window_pos[1] + first_window_height + 5  # 加5作為間隙
+                # 設定第二個視窗的新位置
+                dpg.set_item_pos("control_center_window", [first_window_pos[0], new_y_pos])
+            else:
+                pass
+            return None
+        else:
+            window_pos = dpg.get_item_pos("board_window")
+            dpg.set_item_pos("control_center_window", [0, window_pos[1] + 35])
+
+    def control_center_time_updater(self):
+        time_formated = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        dpg.set_value("control_center__time_text", f"目前時間：{time_formated}")
+
+
+    def data_updater(self):
+        global game_started
+        while True:
+            if game_started is False:
+                break
+            else:
+                self.control_center_resizer()
+                self.control_center_time_updater()
+                time.sleep(0.8)
+        return None
 
     def __exit__(self, _):
         global game_started
